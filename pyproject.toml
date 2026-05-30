@@ -36,7 +36,7 @@ dependencies = [
     "streamlit>=1.35.0",
     "plotly>=5.18.0",
     "httpx>=0.27.0",
-    "beautifulsoup4>=4.12.0",
+    "duckduckgo-search>=7.0.0",
 ]
 
 [project.optional-dependencies]
@@ -54,8 +54,8 @@ dev = [
 budget = "budget_parser.cli.main:main"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/budget-parser"
-Issues = "https://github.com/yourusername/budget-parser/issues"
+Homepage = "https://github.com/softwayaran/personal-spend-tracker"
+Issues = "https://github.com/softwayaran/personal-spend-tracker/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
