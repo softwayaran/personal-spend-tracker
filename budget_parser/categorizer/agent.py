@@ -91,7 +91,31 @@ TRANSACTIONS TO CATEGORIZE:
 JSON OUTPUT:"""
 
     def _call_llm(self, transactions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Send a batch of transactions to Ollama and return categorization results."""
+        """Send a batch of transactions to Ollama and return categorization results.
+
+        Tries a batch call first. If the LLM returns fewer results than
+        expected, falls back to one-at-a-time calls for the missing items.
+        """
+        results = self._call_llm_batch(transactions)
+
+        returned_indices = {int(r.get("index", -1)) for r in results}
+        missing = [tx for tx in transactions if tx["index"] not in returned_indices]
+
+        if missing:
+            logger.debug(
+                f"Batch returned {len(results)}/{len(transactions)}, "
+                f"retrying {len(missing)} individually"
+            )
+            for tx in missing:
+                single = self._call_llm_batch([tx])
+                for item in single:
+                    item["index"] = tx["index"]
+                results.extend(single)
+
+        return results
+
+    def _call_llm_batch(self, transactions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Send transactions to Ollama and parse the JSON response."""
         prompt = self._build_prompt(transactions)
 
         try:
