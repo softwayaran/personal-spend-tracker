@@ -20,13 +20,12 @@ def db_path():
     os.unlink(path)
 
 
-@patch("budget_parser.categorizer.web_enricher.httpx.get")
+@patch("budget_parser.categorizer.web_enricher.DDGS")
 @patch("budget_parser.categorizer.web_enricher.ollama.chat")
-def test_enrichment_feeds_into_categorization_prompt(mock_ollama_enrich, mock_httpx, db_path):
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.text = '<div class="result__snippet">Thai Fusion is a Thai restaurant</div>'
-    mock_httpx.return_value = mock_resp
+def test_enrichment_feeds_into_categorization_prompt(mock_ollama_enrich, mock_ddgs, db_path):
+    mock_ddgs_instance = MagicMock()
+    mock_ddgs_instance.text.return_value = [{"body": "Thai Fusion is a Thai restaurant"}]
+    mock_ddgs.return_value = mock_ddgs_instance
     mock_ollama_enrich.return_value = {"message": {"content": "Thai restaurant"}}
 
     enricher = WebEnricher(db_path=db_path, delay=0.0)
@@ -48,24 +47,23 @@ def test_enrichment_feeds_into_categorization_prompt(mock_ollama_enrich, mock_ht
     assert "TST* THAI FUSION GRAND RAPIDS MI" in prompt
 
 
-@patch("budget_parser.categorizer.web_enricher.httpx.get")
+@patch("budget_parser.categorizer.web_enricher.DDGS")
 @patch("budget_parser.categorizer.web_enricher.ollama.chat")
-def test_cached_result_skips_network(mock_ollama, mock_httpx, db_path):
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.text = '<div class="result__snippet">Starbucks coffee chain</div>'
-    mock_httpx.return_value = mock_resp
+def test_cached_result_skips_network(mock_ollama, mock_ddgs, db_path):
+    mock_ddgs_instance = MagicMock()
+    mock_ddgs_instance.text.return_value = [{"body": "Starbucks coffee chain"}]
+    mock_ddgs.return_value = mock_ddgs_instance
     mock_ollama.return_value = {"message": {"content": "Coffee chain"}}
 
     enricher = WebEnricher(db_path=db_path, delay=0.0)
     transactions = [{"id": 1, "description": "STARBUCKS #12345", "category": ""}]
 
     enricher.enrich(transactions)
-    assert mock_httpx.call_count == 1
+    assert mock_ddgs.call_count == 1
 
-    mock_httpx.reset_mock()
+    mock_ddgs.reset_mock()
     mock_ollama.reset_mock()
 
     result = enricher.enrich(transactions)
     assert result[0]["context"] == "Coffee chain"
-    mock_httpx.assert_not_called()
+    mock_ddgs.assert_not_called()

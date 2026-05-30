@@ -3,18 +3,14 @@
 import time
 from typing import Dict, List, Optional
 
-import httpx
 import ollama
-from bs4 import BeautifulSoup
+from duckduckgo_search import DDGS
 
 from budget_parser.categorizer.description_normalizer import normalize_description
 from budget_parser.database.db import get_merchant_cache, upsert_merchant_cache
 from budget_parser.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-_SEARCH_URL = "https://html.duckduckgo.com/html/"
-_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 
 class WebEnricher:
@@ -78,19 +74,9 @@ class WebEnricher:
     def _search(self, query: str) -> List[str]:
         """Search DuckDuckGo and return snippet texts."""
         try:
-            response = httpx.get(
-                _SEARCH_URL,
-                params={"q": f"{query} merchant"},
-                headers={"User-Agent": _USER_AGENT},
-                timeout=10.0,
-            )
-            if response.status_code != 200:
-                logger.warning(f"Search returned status {response.status_code} for '{query}'")
-                return []
-
-            soup = BeautifulSoup(response.text, "html.parser")
-            snippet_elements = soup.select(".result__snippet")
-            snippets = [el.get_text(strip=True) for el in snippet_elements[: self.max_snippets]]
+            ddgs = DDGS()
+            results = ddgs.text(f"{query} merchant", max_results=self.max_snippets)
+            snippets = [r["body"] for r in results if r.get("body")]
 
             if not snippets:
                 logger.debug(f"No search snippets found for '{query}'")
