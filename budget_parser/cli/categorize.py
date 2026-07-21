@@ -1,5 +1,6 @@
 """Categorize subcommand — categorizes transactions using Ollama LLM."""
 
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -40,6 +41,7 @@ def add_parser(subparsers):
         default=False,
         help="Skip web enrichment (for fast/offline runs)",
     )
+    p.add_argument("--test", action="store_true", default=False, help="Use test.db and DEBUG logging")
     p.set_defaults(func=categorize_main)
     return p
 
@@ -48,6 +50,18 @@ def categorize_main(args) -> int:
     reset_settings()
     config_path = Path(args.config) if args.config else None
     settings = get_settings(config_path)
+
+    if args.test:
+        if args.db == "budget.db":
+            args.db = "test.db"
+        if args.log_level == "INFO":
+            args.log_level = "DEBUG"
+
+    if not args.test and args.db == "budget.db" and (Path.cwd() / "test.db").exists():
+        print(
+            "⚠ test.db exists — did you mean to use --test? Running against budget.db.",
+            file=sys.stderr,
+        )
 
     setup_logger(
         name="budget_parser",
