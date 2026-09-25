@@ -103,11 +103,10 @@ keyed on a `db_version` session counter, and every write bumps that counter to b
   (old rows stay, but new keys differ).
 
 ## Risks & Fragile Areas
-- **Most of the package isn't committed.** On branch `feat/test-db-isolation`, `git ls-files` tracks only
-  about 10 of the ~35 source files. `pipeline.py`, `models.py`, `extractors/*`, `dashboard/app.py`, `cli/main.py`,
-  every `__init__.py`, `CLAUDE.md` and `docs/architecture.md` are **untracked**. A fresh clone of GitHub
-  can't run. This is the highest-priority issue. Before `git add`, check for private data, since the
-  earlier history involved removing private files.
+- **Most of the package wasn't committed until 2026-09-25.** Before branch `chore/track-source-files`
+  (commit 87c9bbf), only about 10 of the ~35 source files were tracked. The repo had been initialized
+  mid-project. `main` and GitHub still lack them until that branch is merged. New files have to be
+  `git add`ed explicitly, so check `git status` for `??` entries.
 - **Keyword filters are plain substring matches** (`kw in description.lower()`). Keywords like `pts`,
   `points`, `miles`, `total`, `balance` and `purchases` will silently drop real purchases (e.g. "TOTAL WINE",
   "RECEIPTS", "MILES KIMBALL"). Nothing logs a dropped row at INFO level, so you'd only notice missing data.
@@ -143,13 +142,16 @@ keyed on a `db_version` session counter, and every write bumps that counter to b
 - The `db_path` fixture in `tests/conftest.py` gives a fresh temp DB. Use it rather than touching `budget.db`.
 
 ## Open Questions
-- Is leaving most source files untracked intentional (for example, pending a privacy scrub) or an oversight? (Ask the author.)
+- Merge `chore/track-source-files` (on top of `feat/test-db-isolation`) into `main` and push.
 - Should web enrichment default to **off**, given the README's privacy promise?
-- Is `feat/test-db-isolation` ready to merge into `main`? It's 1 commit ahead and all tests pass.
 - Is `../ai-apps/personal-budget-tool` abandoned, or are the two kept in sync?
 - Can `httpx` and `docs/architecture.md` (which omits web enrichment) be dropped or updated?
 
 ## Session Log
+- 2026-09-25 (later): Scanned the untracked files for personal data and found none (the sample transactions don't
+  match `budget.db`). Replaced real merchant names in the `agent.py` prompt examples and the normalizer test with
+  generic ones. Committed all untracked source on `chore/track-source-files`. A fresh clone passes all 70 tests.
+  The "Grand Rapids" sample strings were left in the tests, extractor prompt and `conftest.py`.
 - 2026-09-25: First pass, written from code analysis alone. Read the CLIs, pipeline, settings, db, agent and
   enricher, and ran the test suite (70 passed). Found the untracked-source problem, the env-var precedence
   error in the docs, substring filter false positives, and permanent caching of enrichment failures.
