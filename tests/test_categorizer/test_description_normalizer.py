@@ -28,7 +28,7 @@ def test_strips_store_numbers():
 
 
 def test_strips_trailing_country_codes():
-    assert normalize_description("Ant*MoboreaderHongKongChinaHK") == "Moboreader"
+    assert normalize_description("Ant*StoryAppHongKongChinaHK") == "StoryApp"
 
 
 def test_already_clean_description():

@@ -66,7 +66,7 @@ VALID CATEGORY/SUB-CATEGORY PAIRS:
 
 INSTRUCTIONS:
 1. For each transaction, pick the BEST matching category and sub-category from the list above.
-2. Also extract a clean, short merchant name (e.g., "Netflix", "Meijer", "Starbucks").
+2. Also extract a clean, short merchant name (e.g., "Netflix", "Kroger", "Starbucks").
 3. If the transaction does NOT clearly fit any category, use "" (empty string) for category and sub_category.
 4. Return a JSON array with one object per transaction, in the same order as input.
 5. Each object must have exactly these keys: "index" (integer), "category" (string), "sub_category" (string), "merchant" (string).
@@ -79,11 +79,11 @@ Use these hints for categorization:
 
 EXAMPLES:
 - "Netflix.com408-5403700CA" → {{"index":0, "category":"Utilities", "sub_category":"Streaming", "merchant":"Netflix"}}
-- "MEIJER STORE #158 GRAND RAPIDS MI" → {{"index":1, "category":"Grocery", "sub_category":"Grocery", "merchant":"Meijer"}}
+- "KROGER #512 SPRINGFIELD IL" → {{"index":1, "category":"Grocery", "sub_category":"Grocery", "merchant":"Kroger"}}
 - "NATIONAL MALL PARKING WASHINGTON DC" → {{"index":2, "category":"", "sub_category":"", "merchant":"National Mall Parking"}}
 - "AMAZONMKTPL" → {{"index":3, "category":"Online Shopping", "sub_category":"Amazon", "merchant":"Amazon"}}
-- "Ant*MoboreaderHongKongChinaHK" → {{"index":4, "category":"Hobby", "sub_category":"Books", "merchant":"Moboreader"}}
-- "JAKU SUSHI & GRILL GRAND RAPIDS" → {{"index":5, "category":"Restaurants", "sub_category":"Family", "merchant":"Jaku Sushi & Grill"}}
+- "Ant*StoryAppHongKongChinaHK" → {{"index":4, "category":"Hobby", "sub_category":"Books", "merchant":"StoryApp"}}
+- "OLIVE GARDEN #1234 SPRINGFIELD" → {{"index":5, "category":"Restaurants", "sub_category":"Family", "merchant":"Olive Garden"}}
 
 TRANSACTIONS TO CATEGORIZE:
 {tx_lines}
