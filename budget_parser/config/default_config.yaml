@@ -1,0 +1,57 @@
+# Budget Parser Default Configuration
+# This file contains default settings for the budget parser.
+# Copy this file to 'config.yaml' in the project root to customize settings.
+
+# Folder paths
+todo_folder: "todo"
+done_folder: "done"
+
+# LLM settings
+llm_model: "gemma4"  # Options: llama3, llama3.2, or other Ollama models
+llm_temperature: 0.1  # Range: 0.0-2.0 (lower = more deterministic)
+llm_top_p: 0.2  # Range: 0.0-1.0 (lower = more focused)
+llm_num_predict: 3000  # Maximum tokens to generate
+
+# Processing settings
+lines_per_chunk: 30  # Number of lines per PDF chunk
+enable_regex_fallback: true  # Use regex extraction if LLM fails
+
+# Filter keywords (transactions matching these will be removed)
+rewards_keywords:
+  - "points earned"
+  - "pts earned"
+  - "points"
+  - "pts"
+  - "miles"
+  - "cashback"
+  - "cash back"
+  - "promotional"
+  - "thank you bonus"
+  - "rewards"
+  - "bonus points"
+
+payment_keywords:
+  - "autopay"
+  - "automatic payment"
+  - "payment - thank you"
+  - "remit coupon"
+  - "payment received"
+  - "thank you"
+
+aggregate_keywords:
+  - "purchases"
+  - "total"
+  - "balance"
+  - "beginning balance"
+  - "ending balance"
+  - "payment due"
+  - "total for"
+
+# Logging settings
+log_level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log_file: "logs/budget_parser.log"
+log_max_bytes: 10485760  # 10MB
+log_backup_count: 5
+
+# File movement
+move_to_done: true  # Move processed PDFs to done folder
