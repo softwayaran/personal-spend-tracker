@@ -87,6 +87,17 @@ class Settings(BaseSettings):
         default="llama3", description="Ollama model for summarizing search results"
     )
 
+    # Laya classification settings
+    laya_model: str = Field(
+        default="convaiinnovations/laya", description="HuggingFace laya checkpoint"
+    )
+    laya_confidence_threshold: float = Field(
+        default=0.6, ge=0.0, le=1.0, description="Below this confidence, fall back to LLM"
+    )
+    laya_enabled: bool = Field(
+        default=True, description="Use laya for categorization; false reverts to LLM-only"
+    )
+
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> 'Settings':
         """Load settings from YAML file."""
