@@ -5,7 +5,7 @@
 > and the pipeline steps. This file covers what that one doesn't: why things are built this way,
 > the sharp edges, and where CLAUDE.md or the README is wrong.
 >
-> Written 2026-09-25 from code analysis alone. The author gave no extra context.
+> Started 2026-09-25 from code analysis alone. Updated 2026-09-26.
 
 ## Overview
 A single-user, local-first personal finance tool. It turns credit-card/bank statement PDFs into
@@ -95,7 +95,7 @@ keyed on a `db_version` session counter, and every write bumps that counter to b
   travel as plain dicts after DB load and as the `Transaction` pydantic model only during extraction.
 - `Settings` field names are also the YAML keys and the `BUDGET_PARSER_*` env var names. Renaming a field silently
   orphans the user's `config.yaml` key, because `extra="ignore"` means no error is raised.
-- The categorize CLI mutates `settings.todo_folder`/`done_folder` in place (prefixing the year) on the
+- The **extract** CLI mutates `settings.todo_folder`/`done_folder` in place (prefixing the year) on the
   singleton. That's harmless per process, but it's why `reset_settings()` matters in tests and scripts.
 - Category renames (`update_category`) cascade to transactions by string match, while `delete_category`
   does **not** cascade, which leaves transactions with orphaned category strings.
@@ -118,17 +118,16 @@ keyed on a `db_version` session counter, and every write bumps that counter to b
   as init kwargs, and pydantic-settings ranks init kwargs above env vars. `BUDGET_PARSER_*` only takes effect for
   keys absent from `config.yaml`. Verified 2026-09-25: with `BUDGET_PARSER_LLM_MODEL=envmodel` set,
   `from_yaml` still returns `llama3`.
-- **Model defaults disagree**: `settings.py` defaults `llm_model` to `gemma4`, while `config.yaml`, the README and
-  `web_enrichment_model` use `llama3`. That only matters when there's no config file, but it's surprising.
+- **Model defaults disagree**: `settings.py` and `default_config.yaml` default `llm_model` to `gemma4`, while the
+  user's `config.yaml`, the README and CLAUDE.md say `llama3`. `web_enrichment_model` also defaults to `llama3`.
+  The user's `config.yaml` wins at runtime, but if someone clones fresh without copying it, they get `gemma4`.
 - **No tests** cover `pipeline.py`, `llm_extractor.py`, `pdf_extractor.py`, `agent.categorize` batching,
   `date_utils.infer_years`, `db.update_category` cascade, or the dashboard. Tests that exist mock Ollama and DDGS.
 - **The year-boundary heuristic** only fires when months 1–3 *and* 10–12 appear in the same PDF. A Dec-only
   statement filed under the next year's folder gets the wrong year.
 - **No schema migrations**: see `db.py` above.
-- **Stray junk in the repo root**: an empty directory literally named
-  `C:Users<user>sourcerepos…personal-spend-trackerteststest_categorizer` (a mangled Windows path from
-  some earlier command), an empty `.open` file, and `2026/*.csv` files left over from the pre-DB CSV era. The
-  directory and `.open` are safe to delete, and the CSVs are gitignored.
+- **Stray junk in the repo root**: an empty `.open` file (untracked) and `2026/*.csv` files left over from the
+  pre-DB CSV era. Both are safe to delete; the CSVs are gitignored.
 
 ## How to Run / Test / Build
 - Setup: `python -m venv myenv && source myenv/Scripts/activate && pip install -e ".[dev]"`. Ollama must be
@@ -148,10 +147,11 @@ keyed on a `db_version` session counter, and every write bumps that counter to b
 - Can `httpx` and `docs/architecture.md` (which omits web enrichment) be dropped or updated?
 
 ## Session Log
-- 2026-09-25 (later): Scanned the untracked files for personal data and found none (the sample transactions don't
-  match `budget.db`). Replaced real merchant names in the `agent.py` prompt examples and the normalizer test with
-  generic ones. Committed all untracked source on `chore/track-source-files`. A fresh clone passes all 70 tests.
-  The "Grand Rapids" sample strings were left in the tests, extractor prompt and `conftest.py`.
-- 2026-09-25: First pass, written from code analysis alone. Read the CLIs, pipeline, settings, db, agent and
-  enricher, and ran the test suite (70 passed). Found the untracked-source problem, the env-var precedence
-  error in the docs, substring filter false positives, and permanent caching of enrichment failures.
+- 2026-09-26: Verification pass. No code changes since last session. Fixed three inaccuracies: the coupling
+  section wrongly said "categorize CLI" mutates folder paths (it's the extract CLI); the model-defaults note
+  now includes `default_config.yaml` (also gemma4, not llama3); and the stray mangled-path directory is gone.
+  70 tests still passing (40% coverage). Branch `chore/track-source-files` still unmerged.
+- 2026-09-25 (later): Scanned untracked files for personal data. Replaced real merchant names in prompt examples
+  and normalizer test. Committed all untracked source on `chore/track-source-files`. 70 tests pass.
+- 2026-09-25: First pass from code analysis. Found the untracked-source problem, env-var precedence error in
+  docs, substring filter false positives, and permanent caching of enrichment failures.
