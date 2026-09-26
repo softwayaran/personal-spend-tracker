@@ -248,7 +248,54 @@ def bulk_update_transaction_categories(db_path: str, updates: List[Dict]) -> int
         conn.close()
 ```
 
-- [ ] **Step 5: Update get_categories and add_category to include description**
+- [ ] **Step 5: Add update_category_description and auto-populate helper**
+
+In `budget_parser/database/db.py`, add a function to update a single category's description, and a function to auto-populate empty descriptions:
+
+```python
+def update_category_description(db_path: str, category_id: int, description: str) -> None:
+    """Update the laya criteria description for a category."""
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "UPDATE categories SET description = ? WHERE id = ?",
+            (description, category_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def auto_populate_category_descriptions(db_path: str) -> int:
+    """Fill empty category descriptions with a default derived from the name.
+
+    Returns the number of rows updated.
+    """
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT id, category, sub_category FROM categories WHERE description = ''"
+        ).fetchall()
+        count = 0
+        for row in rows:
+            desc = row["sub_category"].lower()
+            if row["category"].lower() != row["sub_category"].lower():
+                desc = f"{row['sub_category'].lower()} ({row['category'].lower()})"
+            conn.execute(
+                "UPDATE categories SET description = ? WHERE id = ?",
+                (desc, row["id"]),
+            )
+            count += 1
+        if count:
+            conn.commit()
+        return count
+    finally:
+        conn.close()
+```
+
+- [ ] **Step 6: Update get_categories and add_category to include description**
+
+> Note: Also update `update_category` if it needs to preserve description. The existing `update_category` function renames categories — it does not touch the description column, which is fine since description stays with the row.
 
 In `budget_parser/database/db.py`, update `get_categories`:
 
@@ -315,7 +362,7 @@ def get_uncategorized_transactions(db_path: str, year: int) -> List[Dict]:
         conn.close()
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [ ] **Step 7: Run tests to verify they pass**
 
 Run: `source myenv/Scripts/activate && pytest tests/test_core/test_db_schema.py -v`
 Expected: All 5 tests PASS.
@@ -323,7 +370,7 @@ Expected: All 5 tests PASS.
 Run: `source myenv/Scripts/activate && pytest --no-cov -q`
 Expected: All existing tests still pass (72 total now).
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add budget_parser/database/db.py tests/test_core/test_db_schema.py
@@ -1054,6 +1101,7 @@ from budget_parser.categorizer.regex_categorizer import RegexCategorizer
 from budget_parser.categorizer.web_enricher import WebEnricher
 from budget_parser.config.settings import get_settings, reset_settings
 from budget_parser.database.db import (
+    auto_populate_category_descriptions,
     bulk_update_transaction_categories,
     get_categories,
     get_regex_rules,
@@ -1130,6 +1178,11 @@ def categorize_main(args) -> int:
 
     init_db(args.db)
     logger.info(f"Database: {args.db}")
+
+    # Auto-populate empty category descriptions for laya criteria
+    populated = auto_populate_category_descriptions(args.db)
+    if populated:
+        logger.info(f"Auto-populated {populated} empty category description(s)")
 
     categories = get_categories(args.db)
     regex_rules = get_regex_rules(args.db, enabled_only=True)
@@ -1290,6 +1343,8 @@ extracted via regex as a final pass."
 
 ### Task 6: Add laya dependency to pyproject.toml
 
+> **Note:** This task appears after Task 4 because Task 4's tests mock `laya.Router` and don't need the real package installed. However, you must complete this task before running the pipeline end-to-end (i.e., before manual testing of Task 5's code without mocks).
+
 **Files:**
 - Modify: `pyproject.toml:28-40`
 
@@ -1336,21 +1391,19 @@ git commit -m "chore: add laya dependency to pyproject.toml"
 
 ---
 
-### Task 7: Dashboard — Surface confidence and categorized_by
+### Task 7: Dashboard — Surface confidence, categorized_by, and category descriptions
 
 **Files:**
 - Modify: `budget_parser/dashboard/app.py`
 
 **Interfaces:**
-- Consumes: `get_transactions(db_path, year)` now returns `confidence` and `categorized_by` fields (from Task 1)
+- Consumes: `get_transactions(db_path, year)` now returns `confidence` and `categorized_by` fields (from Task 1). `get_categories(db_path)` now returns `description` field (from Task 1). `bulk_update_transaction_categories` accepts `categorized_by` (from Task 1).
 
-This task modifies the existing Streamlit dashboard. The file is 821 lines — changes are targeted to the Transactions tab and Overview tab.
+This task modifies the existing Streamlit dashboard (821 lines). Read the file fully before making changes. Changes target the Transactions tab, Overview tab, and Categories tab.
 
-- [ ] **Step 1: Add confidence and categorized_by columns to the Transactions tab**
+- [ ] **Step 1: Add `_confidence_color` helper near the top of the file**
 
-In `budget_parser/dashboard/app.py`, find where the transactions DataFrame is displayed in the Transactions tab. Add the two new columns to the display, with color-coding for confidence:
-
-The transactions DataFrame construction should include `confidence` and `categorized_by` from the DB rows. Add a helper function near the top of the file:
+Add this helper function after the imports in `budget_parser/dashboard/app.py`:
 
 ```python
 def _confidence_color(val):
@@ -1364,26 +1417,56 @@ def _confidence_color(val):
     return "color: red"
 ```
 
-Where the transactions dataframe is built, ensure `confidence` and `categorized_by` are included as columns. Apply the style to the confidence column when displaying.
+- [ ] **Step 2: Add confidence and categorized_by to the Transactions tab DataFrame**
 
-- [ ] **Step 2: Add categorized_by filter to the Transactions tab sidebar**
+Find where the transactions DataFrame is constructed in the Transactions tab (look for `pd.DataFrame` built from `get_transactions` results). The DF currently includes columns like `id`, `date`, `description`, `amount`, `category`, `sub_category`, `merchant`. Add `confidence` and `categorized_by` to the column list. When displaying the dataframe with `st.dataframe`, apply `_confidence_color` styling to the confidence column:
 
-Add a multiselect filter in the sidebar for categorized_by values:
+```python
+styled_df = df.style.applymap(_confidence_color, subset=["confidence"])
+st.dataframe(styled_df, width='stretch')
+```
+
+- [ ] **Step 3: Add categorized_by filter to the sidebar**
+
+In the Transactions tab's sidebar section, add a multiselect filter:
 
 ```python
 available_methods = sorted(
-    {tx.get("categorized_by") or "unknown" for tx in transactions}
+    {str(tx.get("categorized_by") or "unknown") for tx in transactions}
 )
 selected_methods = st.sidebar.multiselect(
     "Categorized by", available_methods, default=available_methods
 )
+# Filter the DataFrame to only show selected methods
+df = df[df["categorized_by"].fillna("unknown").isin(selected_methods)]
 ```
 
-Filter the displayed transactions by the selected methods.
+- [ ] **Step 4: Set `categorized_by = "manual"` when user edits transactions in the dashboard**
 
-- [ ] **Step 3: Add laya stats card to the Overview tab**
+Find the transaction edit/save handler in the Transactions tab (look for where `bulk_update_transactions` or `bulk_update_transaction_categories` is called after the user edits a row in the data editor). When a user saves category changes through the dashboard, stamp `categorized_by = "manual"` on those rows:
 
-In the Overview tab, add a summary showing the count by categorization method and average laya confidence:
+```python
+# In the save/update handler for edited transactions:
+for tx in edited_rows:
+    tx["categorized_by"] = "manual"
+    tx["confidence"] = None  # manual edits clear the automated confidence
+```
+
+- [ ] **Step 5: Add description field to the Categories CRUD tab**
+
+Find the Categories tab where categories are displayed and edited. Add the `description` column to the categories DataFrame. When adding or editing a category, include the description field:
+
+```python
+# In the "Add Category" form:
+description = st.text_input("Description (for laya classification)", value="")
+add_category(db_path, new_category, new_sub_category, description)
+```
+
+For the categories data editor, include `description` as an editable column.
+
+- [ ] **Step 6: Add laya stats card to the Overview tab**
+
+In the Overview tab, add a summary below the existing charts:
 
 ```python
 st.subheader("Categorization Methods")
@@ -1395,16 +1478,17 @@ for tx in all_transactions:
     if method == "laya" and tx.get("confidence") is not None:
         laya_confidences.append(tx["confidence"])
 
-cols = st.columns(len(method_counts))
-for col, (method, count) in zip(cols, sorted(method_counts.items())):
-    col.metric(method.title(), count)
+if method_counts:
+    cols = st.columns(min(len(method_counts), 5))
+    for col, (method, count) in zip(cols, sorted(method_counts.items())):
+        col.metric(method.title(), count)
 
 if laya_confidences:
     avg_conf = sum(laya_confidences) / len(laya_confidences)
     st.metric("Avg Laya Confidence", f"{avg_conf:.1%}")
 ```
 
-- [ ] **Step 4: Test the dashboard manually**
+- [ ] **Step 7: Test the dashboard manually**
 
 Run: `source myenv/Scripts/activate && python -m budget_parser serve`
 
@@ -1412,22 +1496,25 @@ Verify in the browser:
 - Transactions tab shows confidence and categorized_by columns
 - Confidence values are color-coded (green/yellow/red/gray)
 - The sidebar filter for categorized_by works
+- Editing a transaction's category in the dashboard sets categorized_by to "manual"
+- Categories tab shows and allows editing the description field
 - Overview tab shows the categorization methods breakdown
 
-- [ ] **Step 5: Run full test suite**
+- [ ] **Step 8: Run full test suite**
 
 Run: `source myenv/Scripts/activate && pytest --no-cov -q`
 Expected: All tests pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add budget_parser/dashboard/app.py
 git commit -m "feat: surface confidence and categorized_by in dashboard
 
 Add confidence column (color-coded) and categorized_by badge to
-Transactions tab. Add method filter to sidebar. Add categorization
-methods summary card to Overview tab."
+Transactions tab. Add method filter to sidebar. Manual edits stamp
+categorized_by='manual'. Category descriptions editable in
+Categories tab. Laya stats card in Overview tab."
 ```
 
 ---
