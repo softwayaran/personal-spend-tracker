@@ -5,7 +5,7 @@
 > and the pipeline steps. This file covers what that one doesn't: why things are built this way,
 > the sharp edges, and where CLAUDE.md or the README is wrong.
 >
-> Started 2026-09-25 from code analysis alone. Updated 2026-09-26.
+> Started 2026-09-25 from code analysis alone. Updated 2026-09-26, 2026-09-27.
 
 ## Overview
 A single-user, local-first personal finance tool. It turns credit-card/bank statement PDFs into
@@ -34,16 +34,34 @@ drops any it can't find in the chunk text (the anti-hallucination step). If an L
 `upsert_transactions` (INSERT OR IGNORE), then the PDF moves to `done/`. An error in one PDF is caught
 and returned as `ProcessingResult(success=False)`, and that PDF stays in `todo/`.
 
-**categorize**: loads the uncategorized rows for `--year`. Then:
-1. The regex pre-pass (`RegexCategorizer`, rules stored in the DB) runs.
-2. The web enrichment pass (`WebEnricher`) sends a DuckDuckGo search for the normalized description, gets a
-   5-word Ollama summary, caches it in `merchant_cache`, and attaches it as `context`.
-3. `CategorizationAgent` sends batches of 20 to Ollama, restricted to the category pairs in the DB. It uses
-   local 0-based indices so partial or reordered responses map back correctly, and it retries missing
-   items one at a time.
-4. `bulk_update_transaction_categories` writes the results.
+**categorize** (`budget_parser/cli/categorize.py`): loads the uncategorized rows for `--year` and runs them
+through a **four-tier pipeline**, writing results to the DB after each tier so partial progress survives a
+crash:
+1. **Regex pre-pass** (`RegexCategorizer`, rules stored in the DB) — first-match-wins, case-insensitive.
+   Matches get `confidence=1.0`, `categorized_by="regex"`.
+2. **Laya classification** (`LayaCategorizer`, only if `laya_enabled`) — a local System-1 classifier
+   (`laya.Router`) does two sequential `predict` calls per transaction: pick a `category` from the DB's
+   distinct category names, then pick a `sub_category` from that category's sub-categories. Confidence is
+   `min(step1_confidence, step2_confidence)`. Rows at or above `laya_confidence_threshold` (default 0.6) get
+   `categorized_by="laya"` and are written immediately. Rows below threshold keep their best guess in a
+   transient `_laya_best_guess` dict (not persisted directly) instead of being categorized.
+3. **Web enrichment + LLM fallback** — whatever tier 1–2 didn't resolve goes to `WebEnricher` (DuckDuckGo
+   search + 5-word Ollama summary, cached in `merchant_cache`, attached as `context`) unless
+   `--no-enrich`/`web_enrichment_enabled: false`, then to `CategorizationAgent` (batches of 20 to Ollama,
+   local 0-based indices, per-item retry). Results get `categorized_by="llm"`.
+4. **Flagged for review** — anything still uncategorized after tier 3 that had a tier-2 `_laya_best_guess`
+   gets that guess written back (category/sub_category/confidence, `categorized_by="laya"`) so it shows up
+   in the dashboard as a low-confidence row instead of staying blank. Genuinely unmatched rows (no LLM
+   result and no laya guess) stay uncategorized.
 
-Rows that already have a category are never touched, which is what makes reruns safe.
+After the four tiers, a **merchant extraction pass** (`MerchantExtractor`, pure regex, no LLM) fills the
+`merchant` column for any row still missing one, by stripping payment-processor prefixes (`TST*`, `SQ*`,
+`PP*`, `PAYPAL*`), store numbers, phone numbers, city/state/zip suffixes and `.COM`, then title-casing.
+
+Rows that already have a category are never touched by any tier, which is what makes reruns safe.
+`auto_populate_category_descriptions` runs once at the start of `categorize` to backfill empty
+`categories.description` values (used as laya's classification criteria) with a default derived from the
+sub-category name.
 
 **serve**: `subprocess` runs `streamlit run dashboard/app.py`. The dashboard (821 lines, the biggest file) has
 5 tabs (Overview, MoM, Transactions CRUD, Categories CRUD, Regex Rules CRUD). It uses `st.cache_data`
@@ -52,10 +70,12 @@ keyed on a `db_version` session counter, and every write bumps that counter to b
 ## Key Files
 | File | Role | Notes |
 |------|------|-------|
-| `budget_parser/database/db.py` | Every SQL statement and the schema (`init_db`) | Schema changes use `CREATE TABLE IF NOT EXISTS` only. There are **no migrations**, so a column added here won't reach an existing `budget.db`. |
+| `budget_parser/database/db.py` | Every SQL statement and the schema (`init_db`) | Tables use `CREATE TABLE IF NOT EXISTS`; new columns on existing tables go through `_migrate_add_column` (additive-only, no renames/drops) so they reach an existing `budget.db`. |
 | `budget_parser/processors/pipeline.py` | The extract orchestrator | Swallows per-PDF exceptions and only logs them |
-| `budget_parser/cli/categorize.py` | The categorize orchestrator | Holds the pass ordering (regex, then enrich, then LLM) |
+| `budget_parser/cli/categorize.py` | The categorize orchestrator | Holds the four-tier ordering (regex, then laya, then enrich+LLM, then flagged-for-review), plus the merchant-extraction pass |
 | `budget_parser/categorizer/agent.py` | Categorization prompt + batch/retry logic | The prompt hard-codes the author's own category names in its hints/examples (Restaurants, Grocery, Car/Gas…) |
+| `budget_parser/categorizer/laya_categorizer.py` | Two-step laya classifier (category, then sub_category) | Wraps `laya.Router.predict`; confidence is `min()` of the two steps; below-threshold results are stashed in `_laya_best_guess`, not written, until tier 4 |
+| `budget_parser/categorizer/merchant_extractor.py` | Regex-only merchant name cleanup | No LLM involved; strips processor prefixes, store/phone/zip numbers, known cities/states, `.COM` |
 | `budget_parser/categorizer/web_enricher.py` | DuckDuckGo + LLM merchant context | Makes network calls. See Risks. |
 | `budget_parser/validators/transaction_validator.py` | 4-strategy check that an extraction appears in the source text | This is the main defense against LLM-invented rows |
 | `budget_parser/utils/date_utils.py` | `infer_years` handles the Dec/Jan boundary | Heuristic, per PDF batch |
@@ -85,6 +105,19 @@ keyed on a `db_version` session counter, and every write bumps that counter to b
   move, and DEBUG logging. An explicit `--db` wins. Without `--test`, the CLI warns when `test.db` exists.
 - **The Superpowers workflow**: features arrive as a spec plus a plan under `docs/superpowers/` and then
   small conventional commits. Follow that pattern for new features.
+- **Laya as the primary categorization engine, ahead of the LLM.** `LayaCategorizer` uses `laya.Router`, a
+  local System-1 classifier: ~33ms inference and calibrated confidence scores, versus a multi-second Ollama
+  round-trip per batch. It runs as tier 2 (after the free regex pass, before the slow web-enrich+LLM tier),
+  so most transactions never reach Ollama at all. Classification is **two sequential steps** — pick
+  `category` first, then `sub_category` from just that category's options — rather than one flat pick
+  across every category/sub-category pair, because laya's choice primitive degrades past roughly 20 options
+  and a real category list (e.g. Grocery/Restaurants/Car-Gas/... × their sub-categories) blows past that in
+  a single step. Confidence is the **minimum of both steps' confidences** (not their product or the average)
+  so a low-confidence step in either direction correctly caps the result. The **0.6 threshold** is
+  deliberately conservative: it's cheap to fall through to the LLM tier, and a wrong laya category with no
+  human-visible flag would be worse than an extra Ollama call. Below-threshold results aren't discarded —
+  they're carried as `_laya_best_guess` and, if the LLM tier also fails to categorize that row, written back
+  in tier 4 as a flagged, still-visibly-low-confidence guess rather than left blank.
 - **History / provenance** (inferred): this repo is a cleaned-up public copy of
   `../ai-apps/personal-budget-tool` (the older sibling in the parent folder, whose last commits are "remove private
   files"). The two copies have since diverged: web enrichment exists only here.
@@ -125,7 +158,11 @@ keyed on a `db_version` session counter, and every write bumps that counter to b
   `date_utils.infer_years`, `db.update_category` cascade, or the dashboard. Tests that exist mock Ollama and DDGS.
 - **The year-boundary heuristic** only fires when months 1–3 *and* 10–12 appear in the same PDF. A Dec-only
   statement filed under the next year's folder gets the wrong year.
-- **No schema migrations**: see `db.py` above.
+- **Schema migrations are now limited, additive-only**: `_migrate_add_column` (added in the laya work,
+  commit a92cb79) runs `ALTER TABLE ... ADD COLUMN` guarded by a check against `PRAGMA table_info`, so
+  `confidence`, `categorized_by`, and `categories.description` reach an existing `budget.db` on next
+  `init_db`. There's still no down-migration and no renaming/dropping support — a genuinely breaking
+  schema change still requires a fresh DB.
 - **Stray junk in the repo root**: an empty `.open` file (untracked) and `2026/*.csv` files left over from the
   pre-DB CSV era. Both are safe to delete; the CSVs are gitignored.
 
@@ -135,8 +172,9 @@ keyed on a `db_version` session counter, and every write bumps that counter to b
 - Run: `python -m budget_parser extract --year 2026` → `python -m budget_parser categorize --year 2026` →
   `python -m budget_parser serve`. Add `--test` to extract/categorize for scratch runs against `test.db`.
   Add `--no-enrich` for offline runs.
-- Test: `pytest` (70 tests, ~2 s, all passing on 2026-09-25; no Ollama or network needed). `--no-cov` skips the
-  coverage/htmlcov output.
+- Test: `pytest` (98 tests, ~2 s, all passing on 2026-09-27; no Ollama or network needed — laya tests mock
+  `laya.Router` via `sys.modules`, since `laya` isn't a hard runtime requirement for the test env).
+  `--no-cov` skips the coverage/htmlcov output.
 - Lint: `ruff check budget_parser/`, `black budget_parser/`, `mypy budget_parser/`
 - The `db_path` fixture in `tests/conftest.py` gives a fresh temp DB. Use it rather than touching `budget.db`.
 
@@ -147,6 +185,21 @@ keyed on a `db_version` session counter, and every write bumps that counter to b
 - Can `httpx` and `docs/architecture.md` (which omits web enrichment) be dropped or updated?
 
 ## Session Log
+- 2026-09-26/27: Implemented the laya-based categorization redesign (design spec + plan under
+  `docs/superpowers/specs/` and `docs/superpowers/plans/`, 8 tasks). Added `confidence`, `categorized_by`
+  columns and a `categories.description` column (migrated via `_migrate_add_column`, so existing
+  `budget.db` files pick them up without a fresh init). Added `LayaCategorizer`
+  (`categorizer/laya_categorizer.py`), a two-step classifier on `laya.Router` that picks category then
+  sub_category and takes `min()` confidence across both steps. Added `MerchantExtractor`
+  (`categorizer/merchant_extractor.py`) for regex-only merchant name cleanup, replacing reliance on LLM/web
+  enrichment for that field. Rewired `cli/categorize.py` into the four-tier pipeline described in
+  Architecture Summary (regex → laya → web-enrich+LLM → flagged-for-review-via-laya-best-guess), fixing one
+  bug along the way (tier 4 originally read from the stale `llm_pending` list instead of `llm_results`,
+  so LLM-categorized rows could be double-counted as still-pending). Surfaced `confidence` and
+  `categorized_by` in the dashboard. Added `laya_model`, `laya_confidence_threshold`, `laya_enabled` to
+  `Settings` and to the user's `config.yaml`. Added the `laya` PyPI dependency to `pyproject.toml`. 98 tests
+  passing after this session (up from 70 — new tests cover `laya_categorizer.py` and
+  `merchant_extractor.py`).
 - 2026-09-26: Verification pass. No code changes since last session. Fixed three inaccuracies: the coupling
   section wrongly said "categorize CLI" mutates folder paths (it's the extract CLI); the model-defaults note
   now includes `default_config.yaml` (also gemma4, not llama3); and the stray mangled-path directory is gone.
