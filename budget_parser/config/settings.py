@@ -98,6 +98,11 @@ class Settings(BaseSettings):
         default=True, description="Use laya for categorization; false reverts to LLM-only"
     )
 
+    # Location categorizer settings
+    home_state: str = Field(
+        default="MI", description="Two-letter home state/province code for vacation detection"
+    )
+
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> 'Settings':
         """Load settings from YAML file."""

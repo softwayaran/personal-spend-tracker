@@ -60,3 +60,6 @@ move_to_done: true  # Move processed PDFs to done folder
 laya_model: "convaiinnovations/laya"          # HuggingFace checkpoint
 laya_confidence_threshold: 0.6                # Below this -> LLM fallback
 laya_enabled: true                            # false -> revert to LLM-only
+
+# Location-based vacation detection
+home_state: "MI"                              # Transactions outside this state -> Vacation
