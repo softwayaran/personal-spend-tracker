@@ -105,3 +105,53 @@ class TestCategorizePipelineLaya:
         call_txs = mock_agent.categorize.call_args[0][0]
         assert len(call_txs) == 1
         assert call_txs[0]["id"] == 2
+
+        # Verify the LLM result persists in the DB, not the laya best guess
+        final_txs = get_transactions(db_path, 2026)
+        tx2 = [tx for tx in final_txs if tx["description"] == "AMBIGUOUS THING"][0]
+        assert tx2["category"] == "Restaurants"
+        assert tx2["categorized_by"] == "llm"
+
+    @patch("budget_parser.cli.categorize.CategorizationAgent")
+    @patch("budget_parser.cli.categorize.WebEnricher")
+    @patch("budget_parser.cli.categorize.LayaCategorizer")
+    def test_laya_disabled_skips_laya(self, mock_laya_cls, mock_enricher_cls, mock_agent_cls, db_path):
+        """When laya_enabled=False, laya should not be instantiated."""
+        mock_agent = MagicMock()
+        mock_agent.categorize.return_value = [
+            {
+                "id": 1, "description": "KROGER #512 SPRINGFIELD IL", "category": "Grocery",
+                "sub_category": "Grocery", "merchant": "Kroger", "amount": 55.00,
+            },
+            {
+                "id": 2, "description": "AMBIGUOUS THING", "category": "Restaurants",
+                "sub_category": "Family", "merchant": "Ambiguous", "amount": 12.00,
+            },
+        ]
+        mock_agent_cls.return_value = mock_agent
+
+        from budget_parser.cli.categorize import categorize_main
+        from argparse import Namespace
+
+        with patch("budget_parser.cli.categorize.get_settings") as mock_get_settings:
+            mock_settings = MagicMock()
+            mock_settings.laya_enabled = False
+            mock_settings.web_enrichment_enabled = False
+            mock_settings.llm_model = "test"
+            mock_settings.llm_temperature = 0.1
+            mock_settings.llm_top_p = 0.2
+            mock_settings.llm_num_predict = 2000
+            mock_settings.categorize_batch_size = 20
+            mock_settings.log_file = None
+            mock_settings.log_max_bytes = 1000000
+            mock_settings.log_backup_count = 3
+            mock_get_settings.return_value = mock_settings
+
+            args = Namespace(
+                config=None, db=db_path, log_level="WARNING", no_enrich=True,
+                year=2026, test=False,
+            )
+            categorize_main(args)
+
+        mock_laya_cls.assert_not_called()
+        mock_agent.categorize.assert_called_once()

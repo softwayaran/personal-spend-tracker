@@ -177,7 +177,7 @@ def categorize_main(args) -> int:
 
     # ---- Tier 4: Store laya best guesses for remaining uncategorized ----
     final_pending = [
-        tx for tx in (llm_pending if llm_pending else still_pending)
+        tx for tx in (llm_results if llm_pending else still_pending)
         if not tx.get("category", "").strip() and tx.get("_laya_best_guess")
     ]
     if final_pending:
