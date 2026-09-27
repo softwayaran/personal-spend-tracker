@@ -1,5 +1,18 @@
 """Pytest configuration and fixtures."""
 
+import sys
+from unittest.mock import MagicMock
+
+# laya is not installed in this environment yet (it's added in a later task).
+# Register a stand-in module in sys.modules *before* anything in this test
+# session imports budget_parser.categorizer.laya_categorizer (directly, or
+# transitively via budget_parser.cli.categorize), so `from laya import Router`
+# succeeds regardless of which test file or subset is run/collected first.
+# Uses setdefault (not patch.dict) so it persists for the whole session and
+# individual tests can still patch the `Router` attribute directly.
+if "laya" not in sys.modules:
+    sys.modules["laya"] = MagicMock()
+
 import pytest
 from typing import List, Dict, Any
 

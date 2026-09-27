@@ -40,6 +40,7 @@ def test_categorize_main_test_flag_sets_db_path():
         no_enrich=True,
     )
     with patch("budget_parser.cli.categorize.init_db") as mock_init, \
+         patch("budget_parser.cli.categorize.auto_populate_category_descriptions", return_value=0), \
          patch("budget_parser.cli.categorize.get_categories", return_value=[]), \
          patch("budget_parser.cli.categorize.get_regex_rules", return_value=[]), \
          patch("budget_parser.cli.categorize.get_uncategorized_transactions", return_value=[]):
@@ -57,6 +58,7 @@ def test_categorize_main_explicit_db_wins():
         no_enrich=True,
     )
     with patch("budget_parser.cli.categorize.init_db") as mock_init, \
+         patch("budget_parser.cli.categorize.auto_populate_category_descriptions", return_value=0), \
          patch("budget_parser.cli.categorize.get_categories", return_value=[]), \
          patch("budget_parser.cli.categorize.get_regex_rules", return_value=[]), \
          patch("budget_parser.cli.categorize.get_uncategorized_transactions", return_value=[]):
