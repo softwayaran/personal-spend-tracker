@@ -571,7 +571,7 @@ with tab_txns:
             "confidence", "categorized_by",
         ]
         preview_df = display_df[preview_cols].copy()
-        styled_df = preview_df.style.applymap(_confidence_color, subset=["confidence"])
+        styled_df = preview_df.style.map(_confidence_color, subset=["confidence"])
         st.dataframe(styled_df, width='stretch')
 
     edited_df = st.data_editor(
@@ -757,14 +757,30 @@ with tab_cats:
 
                     if save_cat:
                         if new_cat_val.strip() and new_sub_val.strip():
+                            new_cat_stripped = new_cat_val.strip()
+                            new_sub_stripped = new_sub_val.strip()
                             n = update_category(
                                 DEFAULT_DB_PATH,
                                 cat["id"],
-                                new_cat_val.strip(),
-                                new_sub_val.strip(),
+                                new_cat_stripped,
+                                new_sub_stripped,
                             )
+                            # update_category may have deleted cat["id"] (merge into an
+                            # existing category with the same target name). Re-resolve the
+                            # target row so the description lands on whichever row survived.
+                            all_cats_after = get_categories(DEFAULT_DB_PATH)
+                            target_cat = next(
+                                (
+                                    c
+                                    for c in all_cats_after
+                                    if c["category"] == new_cat_stripped
+                                    and c["sub_category"] == new_sub_stripped
+                                ),
+                                None,
+                            )
+                            target_id = target_cat["id"] if target_cat else cat["id"]
                             update_category_description(
-                                DEFAULT_DB_PATH, cat["id"], new_desc_val.strip()
+                                DEFAULT_DB_PATH, target_id, new_desc_val.strip()
                             )
                             _bump_db_version()
                             if n > 0:
