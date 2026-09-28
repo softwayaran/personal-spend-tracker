@@ -13,7 +13,8 @@ A local-first personal finance tool that extracts transactions from bank stateme
 
 - **PDF extraction** — drop bank statement PDFs into a folder, run one command, and get structured transaction data
 - **Fast AI categorization** — uses [laya](https://laya.convaiinnovations.com/), a local classifier that categorizes transactions in ~33ms each with calibrated confidence scores
-- **Four-tier pipeline** — regex rules, laya classifier, LLM fallback, and manual review work together so nothing slips through
+- **Five-tier pipeline** — regex rules, location-based vacation detection, laya classifier, LLM fallback, and manual review work together so nothing slips through
+- **Location-based vacation detection** — transactions outside your home state are automatically tagged as Vacation, so trip spending shows up without manual tagging
 - **Confidence scoring** — every categorization carries a confidence score (color-coded in the dashboard) so you can spot and fix uncertain results
 - **Web enrichment** — optionally searches the web for merchant context to improve LLM fallback accuracy
 - **Interactive dashboard** — Streamlit-powered UI with spending charts, drill-downs, transaction editing, and category management
@@ -88,6 +89,7 @@ All data is stored in `budget.db` (SQLite). The `--year` flag scopes which folde
 | `lines_per_chunk` | `30` | Lines of PDF text per LLM call |
 | `enable_regex_fallback` | `true` | Try regex if LLM finds nothing during extraction |
 | `categorize_batch_size` | `20` | Transactions per LLM categorization batch |
+| `home_state` | `MI` | Two-letter state code; transactions outside this state are tagged as Vacation |
 | `laya_model` | `convaiinnovations/laya` | HuggingFace model checkpoint for laya |
 | `laya_confidence_threshold` | `0.6` | Below this confidence, transactions fall back to the LLM |
 | `laya_enabled` | `true` | Set to `false` to skip laya and use only the LLM for categorization |
@@ -123,6 +125,7 @@ python -m budget_parser serve --port 8080
 | First `categorize` run is slow | Laya downloads its model (~808 MB) on first use — subsequent runs are fast |
 | Laya model download fails | Check your internet connection; the model is fetched from HuggingFace. Retry the command once the connection is stable |
 | Want to skip laya entirely | Set `laya_enabled: false` in `config.yaml` to revert to LLM-only categorization |
+| Online orders tagged as Vacation | Add a regex rule for that merchant in the dashboard (regex runs before location detection) |
 
 ---
 
@@ -148,7 +151,7 @@ PDF files in <year>/todo/
 
 #### Stage 2 — Categorize
 
-A four-tier waterfall pipeline. Each tier only processes transactions left uncategorized by the previous one:
+A five-tier waterfall pipeline. Each tier only processes transactions left uncategorized by the previous one:
 
 ```
 budget.db (uncategorized rows for the year)
@@ -156,6 +159,9 @@ budget.db (uncategorized rows for the year)
   v
 Tier 1: RegexCategorizer     fast pre-pass using regex rules from budget.db
   |                           confidence = 1.0, categorized_by = "regex"
+  v
+Tier 1.5: LocationCategorizer out-of-state transactions -> Vacation
+  |                           confidence = 0.9, categorized_by = "location"
   v
 Tier 2: LayaCategorizer       two-step laya classification (category -> sub_category)
   |                           confidence >= 0.6 -> accept (categorized_by = "laya")
@@ -184,7 +190,7 @@ A Streamlit + Plotly web app with five tabs:
 | **Categories** | Manage category/sub-category pairs and their descriptions (used as laya criteria) |
 | **Regex Rules** | Add pattern rules (e.g., `NETFLIX` -> Utilities/Streaming) |
 
-The sidebar includes a **categorized_by** filter to view transactions by classification method (regex, laya, llm, manual). Manual edits in the Transactions tab stamp `categorized_by = "manual"` and clear the confidence score.
+The sidebar includes a **categorized_by** filter to view transactions by classification method (regex, location, laya, llm, manual). Manual edits in the Transactions tab stamp `categorized_by = "manual"` and clear the confidence score.
 
 ### Setup
 

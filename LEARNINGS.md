@@ -35,26 +35,31 @@ drops any it can't find in the chunk text (the anti-hallucination step). If an L
 and returned as `ProcessingResult(success=False)`, and that PDF stays in `todo/`.
 
 **categorize** (`budget_parser/cli/categorize.py`): loads the uncategorized rows for `--year` and runs them
-through a **four-tier pipeline**, writing results to the DB after each tier so partial progress survives a
+through a **five-tier pipeline**, writing results to the DB after each tier so partial progress survives a
 crash:
 1. **Regex pre-pass** (`RegexCategorizer`, rules stored in the DB) — first-match-wins, case-insensitive.
    Matches get `confidence=1.0`, `categorized_by="regex"`.
-2. **Laya classification** (`LayaCategorizer`, only if `laya_enabled`) — a local System-1 classifier
+2. **Location detection** (`LocationCategorizer`, only if `home_state` is set) — extracts a trailing two-letter
+   state/province code from the description; if it's a valid code and differs from `home_state`, the row is
+   tagged `category="Vacation"`, `confidence=0.9`, `categorized_by="location"`. Online transactions
+   (`.COM`, `WWW.`, `/BILL`, `ONLINE`) are excluded so e-commerce orders shipped from another state aren't
+   mistaken for travel.
+3. **Laya classification** (`LayaCategorizer`, only if `laya_enabled`) — a local System-1 classifier
    (`laya.Router`) does two sequential `predict` calls per transaction: pick a `category` from the DB's
    distinct category names, then pick a `sub_category` from that category's sub-categories. Confidence is
    `min(step1_confidence, step2_confidence)`. Rows at or above `laya_confidence_threshold` (default 0.6) get
    `categorized_by="laya"` and are written immediately. Rows below threshold keep their best guess in a
    transient `_laya_best_guess` dict (not persisted directly) instead of being categorized.
-3. **Web enrichment + LLM fallback** — whatever tier 1–2 didn't resolve goes to `WebEnricher` (DuckDuckGo
+4. **Web enrichment + LLM fallback** — whatever tier 1–3 didn't resolve goes to `WebEnricher` (DuckDuckGo
    search + 5-word Ollama summary, cached in `merchant_cache`, attached as `context`) unless
    `--no-enrich`/`web_enrichment_enabled: false`, then to `CategorizationAgent` (batches of 20 to Ollama,
    local 0-based indices, per-item retry). Results get `categorized_by="llm"`.
-4. **Flagged for review** — anything still uncategorized after tier 3 that had a tier-2 `_laya_best_guess`
+5. **Flagged for review** — anything still uncategorized after tier 4 that had a tier-3 `_laya_best_guess`
    gets that guess written back (category/sub_category/confidence, `categorized_by="laya"`) so it shows up
    in the dashboard as a low-confidence row instead of staying blank. Genuinely unmatched rows (no LLM
    result and no laya guess) stay uncategorized.
 
-After the four tiers, a **merchant extraction pass** (`MerchantExtractor`, pure regex, no LLM) fills the
+After the five tiers, a **merchant extraction pass** (`MerchantExtractor`, pure regex, no LLM) fills the
 `merchant` column for any row still missing one, by stripping payment-processor prefixes (`TST*`, `SQ*`,
 `PP*`, `PAYPAL*`), store numbers, phone numbers, city/state/zip suffixes and `.COM`, then title-casing.
 
@@ -72,9 +77,10 @@ keyed on a `db_version` session counter, and every write bumps that counter to b
 |------|------|-------|
 | `budget_parser/database/db.py` | Every SQL statement and the schema (`init_db`) | Tables use `CREATE TABLE IF NOT EXISTS`; new columns on existing tables go through `_migrate_add_column` (additive-only, no renames/drops) so they reach an existing `budget.db`. |
 | `budget_parser/processors/pipeline.py` | The extract orchestrator | Swallows per-PDF exceptions and only logs them |
-| `budget_parser/cli/categorize.py` | The categorize orchestrator | Holds the four-tier ordering (regex, then laya, then enrich+LLM, then flagged-for-review), plus the merchant-extraction pass |
+| `budget_parser/cli/categorize.py` | The categorize orchestrator | Holds the five-tier ordering (regex, then location, then laya, then enrich+LLM, then flagged-for-review), plus the merchant-extraction pass |
 | `budget_parser/categorizer/agent.py` | Categorization prompt + batch/retry logic | The prompt hard-codes the author's own category names in its hints/examples (Restaurants, Grocery, Car/Gas…) |
-| `budget_parser/categorizer/laya_categorizer.py` | Two-step laya classifier (category, then sub_category) | Wraps `laya.Router.predict`; confidence is `min()` of the two steps; below-threshold results are stashed in `_laya_best_guess`, not written, until tier 4 |
+| `budget_parser/categorizer/location_categorizer.py` | Tier 1.5: tags out-of-state transactions as Vacation | Extracts a trailing 2-letter US state/Canadian province code from `description` via regex; skips rows already categorized and rows matching an "online" pattern (`.COM`, `WWW.`, `/BILL`, `ONLINE`) so mail-order/e-commerce charges aren't mistaken for travel just because they list a distant state |
+| `budget_parser/categorizer/laya_categorizer.py` | Two-step laya classifier (category, then sub_category) | Wraps `laya.Router.predict`; confidence is `min()` of the two steps; below-threshold results are stashed in `_laya_best_guess`, not written, until tier 5 |
 | `budget_parser/categorizer/merchant_extractor.py` | Regex-only merchant name cleanup | No LLM involved; strips processor prefixes, store/phone/zip numbers, known cities/states, `.COM` |
 | `budget_parser/categorizer/web_enricher.py` | DuckDuckGo + LLM merchant context | Makes network calls. See Risks. |
 | `budget_parser/validators/transaction_validator.py` | 4-strategy check that an extraction appears in the source text | This is the main defense against LLM-invented rows |
@@ -117,7 +123,16 @@ keyed on a `db_version` session counter, and every write bumps that counter to b
   deliberately conservative: it's cheap to fall through to the LLM tier, and a wrong laya category with no
   human-visible flag would be worse than an extra Ollama call. Below-threshold results aren't discarded —
   they're carried as `_laya_best_guess` and, if the LLM tier also fails to categorize that row, written back
-  in tier 4 as a flagged, still-visibly-low-confidence guess rather than left blank.
+  in tier 5 as a flagged, still-visibly-low-confidence guess rather than left blank.
+- **Location-based vacation detection runs ahead of laya (tier 1.5)**, on the theory that "far from home" is a
+  stronger, cheaper signal than anything a classifier would infer from the merchant name alone: a grocery
+  store or restaurant charge with an out-of-state code is almost always trip spending, and catching it before
+  laya/LLM see it avoids a wrong category guess. It's deliberately narrow — a bare regex match on a trailing
+  state/province code, confidence pinned at 0.9 (high but not 1.0, since it's a heuristic, not a rule the user
+  wrote) — and it explicitly excludes anything that looks like an online order (`.COM`, `WWW.`, `/BILL`,
+  `ONLINE`), since e-commerce descriptions often carry the seller's home state/warehouse location, not the
+  cardholder's. `home_state` defaults to `"MI"` in `default_config.yaml`/`Settings`; the tier is a no-op only
+  if a user blanks it out.
 - **History / provenance** (inferred): this repo is a cleaned-up public copy of
   `../ai-apps/personal-budget-tool` (the older sibling in the parent folder, whose last commits are "remove private
   files"). The two copies have since diverged: web enrichment exists only here.
@@ -185,6 +200,7 @@ keyed on a `db_version` session counter, and every write bumps that counter to b
 - Can `httpx` and `docs/architecture.md` (which omits web enrichment) be dropped or updated?
 
 ## Session Log
+- 2026-09-27: Added LocationCategorizer (out-of-state → Vacation), rewrote category descriptions for laya accuracy
 - 2026-09-26/27: Implemented the laya-based categorization redesign (design spec + plan under
   `docs/superpowers/specs/` and `docs/superpowers/plans/`, 8 tasks). Added `confidence`, `categorized_by`
   columns and a `categories.description` column (migrated via `_migrate_add_column`, so existing
