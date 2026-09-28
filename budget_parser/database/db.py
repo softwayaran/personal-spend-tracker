@@ -297,7 +297,7 @@ def migrate_category_descriptions(db_path: str) -> int:
             sub_lower = row["sub_category"].lower()
             auto_pattern = f"{sub_lower} ({row['category'].lower()})"
 
-            if current == "" or current == sub_lower or current == auto_pattern:
+            if current == "" or current == sub_lower or current == row["sub_category"] or current == auto_pattern:
                 conn.execute(
                     "UPDATE categories SET description = ? WHERE id = ?",
                     (improved, row["id"]),

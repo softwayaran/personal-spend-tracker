@@ -26,6 +26,7 @@ from budget_parser.database.db import (
     get_categories,
     get_regex_rules,
     get_transactions,
+    init_db,
     update_category,
     update_category_description,
     update_regex_rule,
@@ -38,16 +39,7 @@ st.set_page_config(page_title="Budget Dashboard", layout="wide", page_icon="$")
 PALETTE = px.colors.qualitative.Plotly
 DEFAULT_DB_PATH = "budget.db"
 
-
-def _confidence_color(val):
-    """Color-code confidence values for the dataframe."""
-    if val is None or pd.isna(val):
-        return "color: gray"
-    if val >= 0.8:
-        return "color: green"
-    if val >= 0.6:
-        return "color: orange"
-    return "color: red"
+init_db(DEFAULT_DB_PATH)
 
 
 # -- Cache invalidation --------------------------------------------------------
@@ -564,15 +556,6 @@ with tab_txns:
     display_df = display_df.sort_values(sort_col, ascending=(sort_dir == "Ascending"))
 
     st.caption(f"Showing {len(display_df)} of {len(editor_df)} transactions")
-
-    if not display_df.empty:
-        preview_cols = [
-            "id", "date", "description", "category", "sub_category",
-            "confidence", "categorized_by",
-        ]
-        preview_df = display_df[preview_cols].copy()
-        styled_df = preview_df.style.map(_confidence_color, subset=["confidence"])
-        st.dataframe(styled_df, width='stretch')
 
     edited_df = st.data_editor(
         display_df,
