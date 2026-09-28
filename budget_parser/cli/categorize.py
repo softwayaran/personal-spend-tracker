@@ -6,6 +6,7 @@ from pathlib import Path
 
 from budget_parser.categorizer.agent import CategorizationAgent
 from budget_parser.categorizer.laya_categorizer import LayaCategorizer
+from budget_parser.categorizer.location_categorizer import LocationCategorizer
 from budget_parser.categorizer.merchant_extractor import MerchantExtractor
 from budget_parser.categorizer.regex_categorizer import RegexCategorizer
 from budget_parser.categorizer.web_enricher import WebEnricher
@@ -124,8 +125,20 @@ def categorize_main(args) -> int:
     if regex_results:
         bulk_update_transaction_categories(args.db, regex_results)
 
-    # ---- Tier 2: Laya classification ----
+    # ---- Tier 1.5: Location-based vacation detection ----
     still_pending = [tx for tx in pending if not tx.get("category", "").strip()]
+
+    if still_pending and settings.home_state:
+        location_cat = LocationCategorizer(settings.home_state)
+        still_pending = location_cat.categorize(still_pending)
+
+        location_done = [tx for tx in still_pending if tx.get("categorized_by") == "location"]
+        if location_done:
+            bulk_update_transaction_categories(args.db, location_done)
+            logger.info(f"Location categorizer: {len(location_done)} out-of-state transaction(s) -> Vacation")
+
+    # ---- Tier 2: Laya classification ----
+    still_pending = [tx for tx in still_pending if not tx.get("category", "").strip()]
 
     if still_pending and settings.laya_enabled:
         laya_cat = LayaCategorizer(

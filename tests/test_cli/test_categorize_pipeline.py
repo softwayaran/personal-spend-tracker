@@ -1,5 +1,6 @@
 """Tests for the four-tier categorization pipeline wiring."""
 
+import argparse
 import sys
 from unittest.mock import patch, MagicMock
 
@@ -12,6 +13,7 @@ import pytest
 if "laya" not in sys.modules:
     sys.modules["laya"] = MagicMock()
 
+from budget_parser.cli.categorize import categorize_main
 from budget_parser.database.db import (
     init_db, add_category, upsert_transactions, get_transactions,
 )
@@ -155,3 +157,34 @@ class TestCategorizePipelineLaya:
 
         mock_laya_cls.assert_not_called()
         mock_agent.categorize.assert_called_once()
+
+
+@patch("budget_parser.cli.categorize.auto_populate_category_descriptions")
+@patch("budget_parser.cli.categorize.get_transactions")
+@patch("budget_parser.cli.categorize.bulk_update_transaction_categories")
+@patch("budget_parser.cli.categorize.get_uncategorized_transactions")
+@patch("budget_parser.cli.categorize.get_regex_rules", return_value=[])
+@patch("budget_parser.cli.categorize.get_categories", return_value=[
+    {"category": "Restaurants", "sub_category": "Family", "description": "family dining"},
+])
+@patch("budget_parser.cli.categorize.init_db")
+def test_location_categorizer_tags_vacation(
+    mock_init, mock_cats, mock_rules, mock_uncat,
+    mock_bulk, mock_txs, mock_auto, tmp_path
+):
+    """Out-of-state transaction is tagged as Vacation before laya."""
+    mock_uncat.return_value = [
+        {"id": 1, "description": "SHAKE SHACK LAS LAS VEGAS NV", "category": ""},
+    ]
+    mock_txs.return_value = []
+
+    args = argparse.Namespace(
+        year=2026, config=None, db=str(tmp_path / "test.db"),
+        log_level="WARNING", no_enrich=True, test=False,
+    )
+    categorize_main(args)
+
+    bulk_calls = mock_bulk.call_args_list
+    location_call = bulk_calls[0]
+    saved = location_call[0][1]
+    assert any(tx["categorized_by"] == "location" and tx["category"] == "Vacation" for tx in saved)

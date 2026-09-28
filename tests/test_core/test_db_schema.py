@@ -2,7 +2,7 @@
 
 import sqlite3
 import pytest
-from budget_parser.database.db import init_db, get_connection
+from budget_parser.database.db import init_db, get_connection, add_category, get_categories
 
 
 @pytest.fixture
@@ -89,3 +89,35 @@ class TestSchemaMigration:
         conn.execute("SELECT confidence, categorized_by FROM transactions LIMIT 1")
         conn.execute("SELECT description FROM categories LIMIT 1")
         conn.close()
+
+
+def test_migrate_descriptions_updates_auto_generated(tmp_path):
+    """migrate_category_descriptions replaces auto-generated descriptions."""
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+    add_category(db_path, "Car", "Gas", "gas (car)")
+    add_category(db_path, "Utilities", "Gas", "gas (utilities)")
+
+    from budget_parser.database.db import migrate_category_descriptions
+    count = migrate_category_descriptions(db_path)
+
+    cats = get_categories(db_path)
+    car_gas = next(c for c in cats if c["category"] == "Car" and c["sub_category"] == "Gas")
+    util_gas = next(c for c in cats if c["category"] == "Utilities" and c["sub_category"] == "Gas")
+    assert "gas station" in car_gas["description"].lower()
+    assert "utility" in util_gas["description"].lower()
+    assert count >= 2
+
+
+def test_migrate_descriptions_preserves_custom(tmp_path):
+    """migrate_category_descriptions does not overwrite custom descriptions."""
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+    add_category(db_path, "Car", "Gas", "my custom description for gas")
+
+    from budget_parser.database.db import migrate_category_descriptions
+    migrate_category_descriptions(db_path)
+
+    cats = get_categories(db_path)
+    car_gas = next(c for c in cats if c["category"] == "Car" and c["sub_category"] == "Gas")
+    assert car_gas["description"] == "my custom description for gas"
