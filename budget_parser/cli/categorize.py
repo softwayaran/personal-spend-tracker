@@ -189,6 +189,8 @@ def categorize_main(args) -> int:
             logger.info(f"LLM fallback categorized {len(llm_done)} transaction(s)")
 
     # ---- Tier 4: Store laya best guesses for remaining uncategorized ----
+    # _laya_best_guess is set by LayaCategorizer and must survive through CategorizationAgent
+    # (agent.py copies full tx dicts, preserving this key).
     final_pending = [
         tx for tx in (llm_results if llm_pending else still_pending)
         if not tx.get("category", "").strip() and tx.get("_laya_best_guess")

@@ -304,7 +304,8 @@ def migrate_category_descriptions(db_path: str) -> int:
                 )
                 count += 1
 
-        conn.commit()
+        if count:
+            conn.commit()
         return count
     finally:
         conn.close()

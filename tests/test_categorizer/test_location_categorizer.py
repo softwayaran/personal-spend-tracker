@@ -1,7 +1,5 @@
 """Tests for LocationCategorizer."""
 
-import pytest
-
 from budget_parser.categorizer.location_categorizer import LocationCategorizer
 
 

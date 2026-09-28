@@ -25,6 +25,9 @@ ALL_CODES = US_STATES | CA_PROVINCES
 
 _ONLINE_RE = re.compile(r"\.COM|WWW\.|/BILL|ONLINE", re.IGNORECASE)
 
+# No word boundary before the capture — intentional to support glued codes like "KENTWOODMI".
+# Merchant names ending in state codes (COSTCO→CO) are a known false-positive risk, mitigated
+# by regex rules running first and confidence capped at 0.9.
 _STATE_RE = re.compile(
     r"([A-Z]{2})"
     r"(?:\s*-?\s*\$[\d.,]+)?"
