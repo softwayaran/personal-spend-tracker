@@ -33,6 +33,7 @@ def init_db(db_path: str) -> None:
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 category     TEXT NOT NULL,
                 sub_category TEXT NOT NULL,
+                description  TEXT NOT NULL DEFAULT '',
                 UNIQUE(category, sub_category)
             );
 
@@ -48,14 +49,16 @@ def init_db(db_path: str) -> None:
             );
 
             CREATE TABLE IF NOT EXISTS transactions (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                year         INTEGER NOT NULL,
-                date         TEXT NOT NULL,
-                description  TEXT NOT NULL,
-                amount       REAL NOT NULL,
-                category     TEXT NOT NULL DEFAULT '',
-                sub_category TEXT NOT NULL DEFAULT '',
-                merchant     TEXT NOT NULL DEFAULT '',
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                year            INTEGER NOT NULL,
+                date            TEXT NOT NULL,
+                description     TEXT NOT NULL,
+                amount          REAL NOT NULL,
+                category        TEXT NOT NULL DEFAULT '',
+                sub_category    TEXT NOT NULL DEFAULT '',
+                merchant        TEXT NOT NULL DEFAULT '',
+                confidence      REAL,
+                categorized_by  TEXT,
                 UNIQUE(year, date, description, amount)
             );
 
@@ -70,8 +73,24 @@ def init_db(db_path: str) -> None:
             );
         """)
         conn.commit()
+
+        # Migrate existing DBs: add columns that may be missing
+        _migrate_add_column(conn, "transactions", "confidence", "REAL")
+        _migrate_add_column(conn, "transactions", "categorized_by", "TEXT")
+        _migrate_add_column(conn, "categories", "description", "TEXT NOT NULL DEFAULT ''")
     finally:
         conn.close()
+
+    migrate_category_descriptions(db_path)
+
+
+def _migrate_add_column(conn: sqlite3.Connection, table: str, column: str, col_type: str) -> None:
+    """Add a column if it doesn't exist. Silently ignores duplicates."""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
 
 
 # ---------------------------------------------------------------------------
@@ -83,20 +102,20 @@ def get_categories(db_path: str) -> List[Dict]:
     conn = get_connection(db_path)
     try:
         rows = conn.execute(
-            "SELECT id, category, sub_category FROM categories ORDER BY category, sub_category"
+            "SELECT id, category, sub_category, description FROM categories ORDER BY category, sub_category"
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()
 
 
-def add_category(db_path: str, category: str, sub_category: str) -> int:
+def add_category(db_path: str, category: str, sub_category: str, description: str = "") -> int:
     """Insert a new category/sub_category pair. Returns the new row id."""
     conn = get_connection(db_path)
     try:
         cursor = conn.execute(
-            "INSERT INTO categories (category, sub_category) VALUES (?, ?)",
-            (category, sub_category),
+            "INSERT INTO categories (category, sub_category, description) VALUES (?, ?, ?)",
+            (category, sub_category, description),
         )
         conn.commit()
         return cursor.lastrowid
@@ -160,6 +179,134 @@ def delete_category(db_path: str, category_id: int) -> None:
     try:
         conn.execute("DELETE FROM categories WHERE id = ?", (category_id,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def update_category_description(db_path: str, category_id: int, description: str) -> None:
+    """Update the laya criteria description for a category."""
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "UPDATE categories SET description = ? WHERE id = ?",
+            (description, category_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def auto_populate_category_descriptions(db_path: str) -> int:
+    """Fill empty category descriptions with a default derived from the name.
+
+    Returns the number of rows updated.
+    """
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT id, category, sub_category FROM categories WHERE description = ''"
+        ).fetchall()
+        count = 0
+        for row in rows:
+            desc = row["sub_category"]
+            conn.execute(
+                "UPDATE categories SET description = ? WHERE id = ?",
+                (desc, row["id"]),
+            )
+            count += 1
+        if count:
+            conn.commit()
+        return count
+    finally:
+        conn.close()
+
+
+# Map of (category, sub_category) -> improved description
+_IMPROVED_DESCRIPTIONS = {
+    ("Car", "Gas"): "gas stations, fuel, Shell, BP, Speedway, Meijer gas",
+    ("Car", "Insurance"): "auto insurance, car insurance premium, Progressive, Geico",
+    ("Car", "Service"): "auto repair, oil change, tire, mechanic, dealership service, car wash",
+    ("Car", "Taxi"): "taxi, cab fare, airport shuttle",
+    ("Entertainment", "Events"): "concerts, shows, theme parks, sporting events, tickets, museum",
+    ("Entertainment", "Movies"): "movie theater, cinema, AMC, Regal, Celebration Cinema",
+    ("Entertainment", "Streaming"): "movie rentals, pay-per-view, Fandango, Vudu",
+    ("Grocery", "Grocery"): "grocery stores, supermarkets, Meijer, Kroger, Aldi, food shopping",
+    ("Grocery", "Indian"): "Indian grocery, Indian market, Spice of India, specialty spices",
+    ("Grooming", "Clothes"): "clothing stores, apparel, shoes, fashion retail",
+    ("Grooming", "Haircut"): "haircut, salon, barber, Great Clips, hair styling",
+    ("Grooming", "Makeup"): "cosmetics, beauty products, skincare, Sephora, Ulta",
+    ("Hobby", "Books"): "books, bookstore, Kindle, audiobooks, reading apps",
+    ("Hobby", "Learning"): "online courses, education, training, Claude, ChatGPT, AI tools",
+    ("Hobby", "Pickleball"): "pickleball courts, paddles, pickleball equipment",
+    ("Hobby", "YMCA"): "YMCA membership, gym fees, fitness center",
+    ("House", "Aquarium"): "aquarium supplies, fish, pet store aquarium",
+    ("House", "Association Fee"): "HOA fee, homeowner association dues, community fee",
+    ("House", "Insurance"): "homeowner insurance, home insurance, dwelling policy",
+    ("House", "Mortgage"): "mortgage payment, home loan, escrow",
+    ("House", "Ring"): "Ring doorbell, home security subscription",
+    ("India", "Parents"): "wire transfer to India, remittance, family support",
+    ("Kids Activity", "Ice Skating"): "ice skating rink, skating lessons, Patterson Ice",
+    ("Kids Activity", "Music"): "music lessons, piano, instrument classes, music school",
+    ("Kids Activity", "Swimming"): "swim lessons, pool membership, swimming class",
+    ("Kids Activity", "Toys"): "toy stores, games, LEGO, children's toys",
+    ("Kids Activity", "YMCA"): "kids YMCA programs, youth activities, day camp",
+    ("Medical", "Dentist"): "dentist, dental, orthodontist, teeth cleaning, eye doctor, optometrist",
+    ("Misc", "Gifts"): "gifts, presents, jewelry, department store, Kate Spade, Coach, Perfumania",
+    ("Misc", "Photo"): "photography, photo prints, Shutterfly, portrait studio",
+    ("Online Shopping", "Amazon"): "Amazon, Amazon Marketplace, Amzn, Prime purchases",
+    ("Restaurants", "Bubble"): "bubble tea, boba, smoothie, juice bar, Surf City Squeeze",
+    ("Restaurants", "Family"): "family dining, sit-down restaurants, casual dining, takeout, fast food",
+    ("Restaurants", "Office"): "work lunch, office meal, business dining",
+    ("Tax", "Income"): "income tax, tax payment, IRS, state tax",
+    ("Utilities", "Cloud Storage"): "iCloud, Google One, cloud storage subscription, Apple storage",
+    ("Utilities", "Electricity"): "electric bill, power company, DTE Energy, Consumers Energy",
+    ("Utilities", "Gas"): "natural gas utility bill, gas utility, heating",
+    ("Utilities", "Internet"): "internet service, ISP, Comcast, Xfinity, broadband",
+    ("Utilities", "Phone"): "cell phone bill, mobile plan, T-Mobile, Verizon, AT&T",
+    ("Utilities", "Streaming"): "Netflix, Hulu, Disney+, YouTube TV, Paramount+, HBO, streaming subscription",
+    ("Vacation", "Bahamas"): "Bahamas cruise, Royal Caribbean, Caribbean vacation",
+    ("Vacation", "Detroit"): "Detroit area trip, Sterling Heights, Canton, Troy",
+    ("Vacation", "Minnesota"): "Minnesota trip, Mall of America, Bloomington MN",
+    ("Vacation", "Ohio"): "Ohio trip, Hocking Hills, Logan OH",
+    ("Vacation", "Orlando"): "Orlando trip, Universal Studios, Florida vacation",
+    ("Vacation", "Toronto"): "Toronto trip, Ontario Canada, Niagara",
+    ("Vacation", "Utah"): "Utah trip, Bryce Canyon, Zion, Cedar City, Las Vegas",
+}
+
+
+def migrate_category_descriptions(db_path: str) -> int:
+    """Replace auto-generated category descriptions with improved ones.
+
+    Only updates rows whose current description matches the auto-generated
+    pattern (``sub (cat)`` or ``sub``) or is empty. Custom descriptions are
+    preserved. Returns the number of rows updated.
+    """
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT id, category, sub_category, description FROM categories"
+        ).fetchall()
+        count = 0
+        for row in rows:
+            key = (row["category"], row["sub_category"])
+            improved = _IMPROVED_DESCRIPTIONS.get(key)
+            if not improved:
+                continue
+
+            current = row["description"].strip()
+            sub_lower = row["sub_category"].lower()
+            auto_pattern = f"{sub_lower} ({row['category'].lower()})"
+
+            if current == "" or current == sub_lower or current == row["sub_category"] or current == auto_pattern:
+                conn.execute(
+                    "UPDATE categories SET description = ? WHERE id = ?",
+                    (improved, row["id"]),
+                )
+                count += 1
+
+        if count:
+            conn.commit()
+        return count
     finally:
         conn.close()
 
@@ -321,7 +468,8 @@ def get_transactions(db_path: str, year: int) -> List[Dict]:
     conn = get_connection(db_path)
     try:
         rows = conn.execute(
-            """SELECT id, year, date, description, amount, category, sub_category, merchant
+            """SELECT id, year, date, description, amount, category, sub_category,
+                      merchant, confidence, categorized_by
                FROM transactions WHERE year = ? ORDER BY date""",
             (year,),
         ).fetchall()
@@ -335,7 +483,8 @@ def get_uncategorized_transactions(db_path: str, year: int) -> List[Dict]:
     conn = get_connection(db_path)
     try:
         rows = conn.execute(
-            """SELECT id, year, date, description, amount, category, sub_category, merchant
+            """SELECT id, year, date, description, amount, category, sub_category,
+                      merchant, confidence, categorized_by
                FROM transactions WHERE year = ? AND category = '' ORDER BY date""",
             (year,),
         ).fetchall()
@@ -348,6 +497,7 @@ def bulk_update_transaction_categories(db_path: str, updates: List[Dict]) -> int
     """Update category/sub_category/merchant for a list of transactions by id.
 
     Each dict must have 'id'. Missing category fields default to empty string.
+    Optionally accepts 'confidence' (float or None) and 'categorized_by' (str or None).
     Returns count of rows updated.
     """
     params = [
@@ -355,6 +505,8 @@ def bulk_update_transaction_categories(db_path: str, updates: List[Dict]) -> int
             tx.get("category", ""),
             tx.get("sub_category", ""),
             tx.get("merchant", ""),
+            tx.get("confidence"),
+            tx.get("categorized_by"),
             tx["id"],
         )
         for tx in updates
@@ -366,7 +518,10 @@ def bulk_update_transaction_categories(db_path: str, updates: List[Dict]) -> int
     conn = get_connection(db_path)
     try:
         conn.executemany(
-            "UPDATE transactions SET category = ?, sub_category = ?, merchant = ? WHERE id = ?",
+            """UPDATE transactions
+               SET category = ?, sub_category = ?, merchant = ?,
+                   confidence = ?, categorized_by = ?
+               WHERE id = ?""",
             params,
         )
         conn.commit()

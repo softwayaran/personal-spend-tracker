@@ -17,6 +17,7 @@ import streamlit as st
 from budget_parser.database.db import (
     add_category,
     add_regex_rule,
+    bulk_update_transaction_categories,
     bulk_update_transactions,
     delete_category,
     delete_regex_rule,
@@ -25,7 +26,9 @@ from budget_parser.database.db import (
     get_categories,
     get_regex_rules,
     get_transactions,
+    init_db,
     update_category,
+    update_category_description,
     update_regex_rule,
     upsert_transactions,
 )
@@ -35,6 +38,8 @@ st.set_page_config(page_title="Budget Dashboard", layout="wide", page_icon="$")
 
 PALETTE = px.colors.qualitative.Plotly
 DEFAULT_DB_PATH = "budget.db"
+
+init_db(DEFAULT_DB_PATH)
 
 
 # -- Cache invalidation --------------------------------------------------------
@@ -337,6 +342,19 @@ with tab_overview:
                 st.markdown(f"##### Sub-categories: {drill_category}")
                 st.dataframe(sub_display, width="stretch", hide_index=True)
 
+    st.divider()
+    st.subheader("Categorization Methods")
+    method_series = df["categorized_by"].fillna("unknown").astype(str).replace("", "unknown")
+    method_counts = method_series.value_counts().sort_index()
+    if not method_counts.empty:
+        cols = st.columns(min(len(method_counts), 5))
+        for col, (method, count) in zip(cols, method_counts.items()):
+            col.metric(method.title(), int(count))
+
+    laya_confidences = df.loc[method_series == "laya", "confidence"].dropna()
+    if not laya_confidences.empty:
+        st.metric("Avg Laya Confidence", f"{laya_confidences.mean():.1%}")
+
 
 # =============================================================================
 # TAB 2 -- MONTH-OVER-MONTH COMPARISON
@@ -457,16 +475,28 @@ with tab_txns:
     cat_options = [""] + sorted(cat_map.keys())
     sub_options = [""] + sorted({sub for subs in cat_map.values() for sub in subs})
 
-    grid_cols = ["id", "date", "description", "amount", "category", "sub_category", "merchant"]
+    grid_cols = [
+        "id", "date", "description", "amount", "category", "sub_category", "merchant",
+        "confidence", "categorized_by",
+    ]
     if raw_df.empty:
         editor_df = pd.DataFrame(columns=grid_cols)
     else:
         editor_df = raw_df[grid_cols].copy()
         editor_df["date"] = editor_df["date"].dt.date
         editor_df["amount"] = pd.to_numeric(editor_df["amount"], errors="coerce")
+        editor_df["confidence"] = pd.to_numeric(editor_df["confidence"], errors="coerce")
     for text_col in ["description", "category", "sub_category", "merchant"]:
         if text_col in editor_df.columns:
             editor_df[text_col] = editor_df[text_col].fillna("").astype(str)
+    editor_df["categorized_by"] = editor_df["categorized_by"].fillna("unknown").astype(str)
+    editor_df.loc[editor_df["categorized_by"] == "", "categorized_by"] = "unknown"
+
+    # -- Categorized-by filter (sidebar) ---------------------------------------
+    available_methods = sorted(set(editor_df["categorized_by"]))
+    selected_methods = st.sidebar.multiselect(
+        "Categorized by", available_methods, default=available_methods
+    )
 
     # -- Filter & Sort controls ------------------------------------------------
     st.markdown("**Filter & Sort**")
@@ -520,6 +550,7 @@ with tab_txns:
         display_mask &= editor_df["merchant"].str.contains(filter_merchant.strip(), case=False, na=False)
     if filter_desc.strip():
         display_mask &= editor_df["description"].str.contains(filter_desc.strip(), case=False, na=False)
+    display_mask &= editor_df["categorized_by"].isin(selected_methods)
 
     display_df = editor_df[display_mask].copy()
     display_df = display_df.sort_values(sort_col, ascending=(sort_dir == "Ascending"))
@@ -540,6 +571,8 @@ with tab_txns:
             "category": st.column_config.SelectboxColumn("Category", options=cat_options, required=False),
             "sub_category": st.column_config.SelectboxColumn("Sub-Category", options=sub_options, required=False),
             "merchant": st.column_config.TextColumn("Merchant", required=False),
+            "confidence": st.column_config.NumberColumn("Confidence", disabled=True, format="%.2f"),
+            "categorized_by": st.column_config.TextColumn("Categorized By", disabled=True),
         },
     )
 
@@ -594,17 +627,21 @@ with tab_txns:
                 delete_ids = sorted(displayed_ids - current_ids)
 
                 updates: List[Dict] = []
+                stamped_updates: List[Dict] = []
                 if not existing.empty:
                     original_map = raw_df.set_index("id")
                     for row in existing.itertuples(index=False):
                         old = original_map.loc[int(row.id)]
                         old_date = pd.to_datetime(old["date"], errors="coerce")
+                        category_changed = (
+                            str(old["category"]) != row.category
+                            or str(old["sub_category"]) != row.sub_category
+                        )
                         changed = (
                             old_date != row.date
                             or str(old["description"]) != row.description
                             or float(old["amount"]) != float(row.amount)
-                            or str(old["category"]) != row.category
-                            or str(old["sub_category"]) != row.sub_category
+                            or category_changed
                             or str(old["merchant"]) != row.merchant
                         )
                         if changed:
@@ -618,6 +655,18 @@ with tab_txns:
                                 "sub_category": row.sub_category,
                                 "merchant": row.merchant,
                             })
+                            if category_changed:
+                                # A user-edited category/sub-category is a manual
+                                # classification -- stamp it and clear the stale
+                                # automated confidence score.
+                                stamped_updates.append({
+                                    "id": int(row.id),
+                                    "category": row.category,
+                                    "sub_category": row.sub_category,
+                                    "merchant": row.merchant,
+                                    "confidence": None,
+                                    "categorized_by": "manual",
+                                })
 
                 inserts_by_year: Dict[int, List[Dict]] = {}
                 if not new_rows.empty:
@@ -633,6 +682,8 @@ with tab_txns:
 
                 try:
                     updated_count = bulk_update_transactions(DEFAULT_DB_PATH, updates) if updates else 0
+                    if stamped_updates:
+                        bulk_update_transaction_categories(DEFAULT_DB_PATH, stamped_updates)
                     inserted_count = 0
                     skipped_count = 0
                     for ins_year, txns in inserts_by_year.items():
@@ -675,6 +726,11 @@ with tab_cats:
                     ec1, ec2 = st.columns(2)
                     new_cat_val = ec1.text_input("Category", value=cat["category"])
                     new_sub_val = ec2.text_input("Sub-Category", value=cat["sub_category"])
+                    new_desc_val = st.text_input(
+                        "Description (for laya classification)",
+                        value=cat.get("description") or "",
+                        key=f"desc_{cat['id']}",
+                    )
 
                     eb1, eb2 = st.columns(2)
                     with eb1:
@@ -684,11 +740,30 @@ with tab_cats:
 
                     if save_cat:
                         if new_cat_val.strip() and new_sub_val.strip():
+                            new_cat_stripped = new_cat_val.strip()
+                            new_sub_stripped = new_sub_val.strip()
                             n = update_category(
                                 DEFAULT_DB_PATH,
                                 cat["id"],
-                                new_cat_val.strip(),
-                                new_sub_val.strip(),
+                                new_cat_stripped,
+                                new_sub_stripped,
+                            )
+                            # update_category may have deleted cat["id"] (merge into an
+                            # existing category with the same target name). Re-resolve the
+                            # target row so the description lands on whichever row survived.
+                            all_cats_after = get_categories(DEFAULT_DB_PATH)
+                            target_cat = next(
+                                (
+                                    c
+                                    for c in all_cats_after
+                                    if c["category"] == new_cat_stripped
+                                    and c["sub_category"] == new_sub_stripped
+                                ),
+                                None,
+                            )
+                            target_id = target_cat["id"] if target_cat else cat["id"]
+                            update_category_description(
+                                DEFAULT_DB_PATH, target_id, new_desc_val.strip()
                             )
                             _bump_db_version()
                             if n > 0:
@@ -712,10 +787,16 @@ with tab_cats:
         ac1, ac2 = st.columns(2)
         new_cat_name = ac1.text_input("Category")
         new_sub_name = ac2.text_input("Sub-Category")
+        new_desc_name = st.text_input("Description (for laya classification)", value="")
         if st.form_submit_button("Add"):
             if new_cat_name.strip() and new_sub_name.strip():
                 try:
-                    add_category(DEFAULT_DB_PATH, new_cat_name.strip(), new_sub_name.strip())
+                    add_category(
+                        DEFAULT_DB_PATH,
+                        new_cat_name.strip(),
+                        new_sub_name.strip(),
+                        new_desc_name.strip(),
+                    )
                     _bump_db_version()
                     st.success(f"Added: {new_cat_name.strip()} / {new_sub_name.strip()}")
                     st.rerun()

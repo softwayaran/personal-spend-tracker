@@ -114,6 +114,7 @@ def test_categorize_warns_when_test_db_exists(tmp_path, capsys):
         no_enrich=True,
     )
     with patch("budget_parser.cli.categorize.init_db"), \
+         patch("budget_parser.cli.categorize.auto_populate_category_descriptions", return_value=0), \
          patch("budget_parser.cli.categorize.get_categories", return_value=[]), \
          patch("budget_parser.cli.categorize.get_regex_rules", return_value=[]), \
          patch("budget_parser.cli.categorize.Path.cwd", return_value=tmp_path):
@@ -137,6 +138,7 @@ def test_categorize_no_warning_with_test_flag(tmp_path, capsys):
         no_enrich=True,
     )
     with patch("budget_parser.cli.categorize.init_db"), \
+         patch("budget_parser.cli.categorize.auto_populate_category_descriptions", return_value=0), \
          patch("budget_parser.cli.categorize.get_categories", return_value=[]), \
          patch("budget_parser.cli.categorize.get_regex_rules", return_value=[]), \
          patch("budget_parser.cli.categorize.Path.cwd", return_value=tmp_path):
